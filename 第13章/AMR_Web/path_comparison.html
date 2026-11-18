@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>AMR 導航演算法比較：Dijkstra (BFS) vs A*</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f4f6f9;
+      color: #333;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    h2 { margin-bottom: 10px; color: #2c3e50; }
+    .controls {
+      background: white;
+      padding: 15px 25px;
+      border-radius: 10px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+      margin-bottom: 15px;
+      display: flex;
+      gap: 15px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    select, button {
+      padding: 8px 14px;
+      border-radius: 6px;
+      border: 1px solid #ccd1d9;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button.primary {
+      background-color: #3498db;
+      color: white;
+      border: none;
+      font-weight: bold;
+    }
+    button.primary:hover { background-color: #2980b9; }
+    .stats-container {
+      display: flex;
+      gap: 20px;
+      margin-bottom: 15px;
+      width: 800px;
+    }
+    .stat-card {
+      flex: 1;
+      background: white;
+      padding: 12px 18px;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+      border-left: 5px solid #3498db;
+    }
+    .stat-card.astar { border-left-color: #e74c3c; }
+    .stat-card h4 { margin: 0 0 8px 0; }
+    .stat-card p { margin: 4px 0; font-size: 14px; }
+    canvas {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+      cursor: crosshair;
+    }
+    .legend {
+      margin-top: 12px;
+      display: flex;
+      gap: 18px;
+      font-size: 13px;
+    }
+    .legend span { display: flex; align-items: center; gap: 6px; }
+    .box { width: 14px; height: 14px; display: inline-block; border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+  <h2>🤖 導航路徑規劃比較：Dijkstra (廣度優先) vs A* (啟發式搜尋)</h2>
+
+  <div class="controls">
+    <label><strong>選擇演算法模式：</strong></label>
+    <select id="algoSelect">
+      <option value="both">⚡ 同屏比較 (Dijkstra vs A*)</option>
+      <option value="dijkstra">🌊 僅顯示 Dijkstra (BFS)</option>
+      <option value="astar">🎯 僅顯示 A* (Heuristic)</option>
+    </select>
+
+    <label><strong>允許對角線移動：</strong></label>
+    <input type="checkbox" id="diagCheck" checked>
+
+    <button class="primary" onclick="runComparison()">▶ 執行規劃比較</button>
+    <button onclick="clearWalls()">🗑️ 清除障礙物</button>
+    <button onclick="generateMaze()">🧱 產生隨機障礙物</button>
+  </div>
+
+  <div class="stats-container">
+    <div class="stat-card">
+      <h4>🌊 Dijkstra (廣度優先搜尋)</h4>
+      <p>探索節點數 (展開範圍)：<strong id="dijkNodes">-</strong> 個</p>
+      <p>最終路徑長度：<strong id="dijkLen">-</strong></p>
+      <p>計算耗時：<strong id="dijkTime">-</strong> ms</p>
+    </div>
+    <div class="stat-card astar">
+      <h4>🎯 A* (啟發式搜尋)</h4>
+      <p>探索節點數 (展開範圍)：<strong id="astarNodes">-</strong> 個</p>
+      <p>最終路徑長度：<strong id="astarLen">-</strong></p>
+      <p>計算耗時：<strong id="astarTime">-</strong> ms</p>
+    </div>
+  </div>
+
+  <canvas id="gridCanvas" width="800" height="500"></canvas>
+
+  <div class="legend">
+    <span><i class="box" style="background:#2ecc71;"></i> 起點 (Start)</span>
+    <span><i class="box" style="background:#f39c12;"></i> 終點 (Goal)</span>
+    <span><i class="box" style="background:#34495e;"></i> 障礙物 (滑鼠拖曳繪製)</span>
+    <span><i class="box" style="background:rgba(52, 152, 219, 0.25);"></i> Dijkstra 探索區域</span>
+    <span><i class="box" style="background:rgba(231, 76, 60, 0.35);"></i> A* 探索區域</span>
+    <span><i class="box" style="background:#2980b9;"></i> Dijkstra 路徑</span>
+    <span><i class="box" style="background:#e74c3c;"></i> A* 路徑</span>
+  </div>
+
+<script>
+const canvas = document.getElementById('gridCanvas');
+const ctx = canvas.getContext('2d');
+const cols = 40, rows = 25;
+const cellSize = canvas.width / cols;
+
+let grid = Array.from({ length: rows }, () => Array(cols).fill(0));
+let start = { r: 12, c: 5 };
+let goal = { r: 12, c: 34 };
+let isMouseDown = false;
+let drawMode = 1; // 1: wall, 0: erase
+
+// 預設建立一道L型障礙牆，凸顯兩者繞障與搜尋差異
+function initDefaultWalls() {
+  for (let r = 5; r < 20; r++) grid[r][20] = 1;
+  for (let c = 14; c < 20; c++) grid[5][c] = 1;
+  for (let c = 14; c < 20; c++) grid[19][c] = 1;
+}
+
+canvas.addEventListener('mousedown', (e) => {
+  isMouseDown = true;
+  const { r, c } = getMouseCell(e);
+  if ((r === start.r && c === start.c) || (r === goal.r && c === goal.c)) return;
+  drawMode = grid[r][c] === 1 ? 0 : 1;
+  grid[r][c] = drawMode;
+  runComparison();
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!isMouseDown) return;
+  const { r, c } = getMouseCell(e);
+  if ((r === start.r && c === start.c) || (r === goal.r && c === goal.c)) return;
+  grid[r][c] = drawMode;
+  runComparison();
+});
+
+window.addEventListener('mouseup', () => isMouseDown = false);
+
+function getMouseCell(e) {
+  const rect = canvas.getBoundingClientRect();
+  const c = Math.min(cols - 1, Math.max(0, Math.floor((e.clientX - rect.left) / cellSize)));
+  const r = Math.min(rows - 1, Math.max(0, Math.floor((e.clientY - rect.top) / cellSize)));
+  return { r, c };
+}
+
+function solvePath(useHeuristic) {
+  const t0 = performance.now();
+  const allowDiag = document.getElementById('diagCheck').checked;
+  const dist = Array.from({ length: rows }, () => Array(cols).fill(Infinity));
+  const visited = Array.from({ length: rows }, () => Array(cols).fill(false));
+  const parent = Array.from({ length: rows }, () => Array(cols).fill(null));
+  const visitedOrder = [];
+
+  const pq = [];
+  dist[start.r][start.c] = 0;
+  pq.push({ r: start.r, c: start.c, f: 0, h: 0 });
+
+  const dirs = [
+    [-1, 0, 1], [1, 0, 1], [0, -1, 1], [0, 1, 1]
+  ];
+  if (allowDiag) {
+    dirs.push([-1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [1, 1, Math.SQRT2]);
+  }
+
+  function heuristic(r, c) {
+    if (!useHeuristic) return 0;
+    const dr = Math.abs(r - goal.r);
+    const dc = Math.abs(c - goal.c);
+    // Octile distance 或 Euclidean distance
+    return allowDiag ? Math.hypot(dr, dc) : (dr + dc);
+  }
+
+  while (pq.length > 0) {
+    // 優先佇列排序：f 值最小優先，若 f 相同則 A* 優先選 h 較小的節點 (Tie-breaking)
+    pq.sort((a, b) => a.f - b.f || a.h - b.h);
+    const curr = pq.shift();
+
+    if (visited[curr.r][curr.c]) continue;
+    visited[curr.r][curr.c] = true;
+    visitedOrder.push({ r: curr.r, c: curr.c });
+
+    if (curr.r === goal.r && curr.c === goal.c) break;
+
+    for (const [dr, dc, cost] of dirs) {
+      const nr = curr.r + dr, nc = curr.c + dc;
+      if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc] === 0 && !visited[nr][nc]) {
+        const newG = dist[curr.r][curr.c] + cost;
+        if (newG < dist[nr][nc]) {
+          dist[nr][nc] = newG;
+          parent[nr][nc] = { r: curr.r, c: curr.c };
+          const h = heuristic(nr, nc);
+          pq.push({ r: nr, nc: nc, c: nc, f: newG + h, h: h });
+        }
+      }
+    }
+  }
+
+  const path = [];
+  let curr = { r: goal.r, c: goal.c };
+  if (parent[curr.r][curr.c] || (curr.r === start.r && curr.c === start.c)) {
+    while (curr) {
+      path.push(curr);
+      curr = parent[curr.r][curr.c];
+    }
+    path.reverse();
+  }
+
+  const t1 = performance.now();
+  return {
+    visitedOrder,
+    path,
+    length: dist[goal.r][goal.c] === Infinity ? '無法抵達' : dist[goal.r][goal.c].toFixed(2),
+    time: (t1 - t0).toFixed(2)
+  };
+}
+
+function drawGrid(dijkRes, astarRes, mode) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // 1. 繪製探索過的節點
+  if (mode === 'both' || mode === 'dijkstra') {
+    ctx.fillStyle = 'rgba(52, 152, 219, 0.25)';
+    for (const cell of dijkRes.visitedOrder) {
+      ctx.fillRect(cell.c * cellSize, cell.r * cellSize, cellSize, cellSize);
+    }
+  }
+  if (mode === 'both' || mode === 'astar') {
+    ctx.fillStyle = 'rgba(231, 76, 60, 0.35)';
+    for (const cell of astarRes.visitedOrder) {
+      ctx.fillRect(cell.c * cellSize, cell.r * cellSize, cellSize, cellSize);
+    }
+  }
+
+  // 2. 繪製障礙物與網格線
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (grid[r][c] === 1) {
+        ctx.fillStyle = '#34495e';
+        ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+      }
+      ctx.strokeStyle = '#e6e9ed';
+      ctx.strokeRect(c * cellSize, r * cellSize, cellSize, cellSize);
+    }
+  }
+
+  // 3. 繪製路徑
+  if ((mode === 'both' || mode === 'dijkstra') && dijkRes.path.length > 1) {
+    drawPathLine(dijkRes.path, '#2980b9', 4, -2);
+  }
+  if ((mode === 'both' || mode === 'astar') && astarRes.path.length > 1) {
+    drawPathLine(astarRes.path, '#e74c3c', 4, 2);
+  }
+
+  // 4. 起點與終點
+  ctx.fillStyle = '#2ecc71';
+  ctx.fillRect(start.c * cellSize + 2, start.r * cellSize + 2, cellSize - 4, cellSize - 4);
+  ctx.fillStyle = '#f39c12';
+  ctx.fillRect(goal.c * cellSize + 2, goal.r * cellSize + 2, cellSize - 4, cellSize - 4);
+}
+
+function drawPathLine(path, color, width, offset) {
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineJoin = 'round';
+  path.forEach((p, idx) => {
+    const x = p.c * cellSize + cellSize / 2 + offset;
+    const y = p.r * cellSize + cellSize / 2 + offset;
+    if (idx === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+function runComparison() {
+  const mode = document.getElementById('algoSelect').value;
+  const dijkRes = solvePath(false);
+  const astarRes = solvePath(true);
+
+  document.getElementById('dijkNodes').innerText = dijkRes.visitedOrder.length;
+  document.getElementById('dijkLen').innerText = dijkRes.length;
+  document.getElementById('dijkTime').innerText = dijkRes.time;
+
+  document.getElementById('astarNodes').innerText = astarRes.visitedOrder.length;
+  document.getElementById('astarLen').innerText = astarRes.length;
+  document.getElementById('astarTime').innerText = astarRes.time;
+
+  drawGrid(dijkRes, astarRes, mode);
+}
+
+function clearWalls() {
+  grid = Array.from({ length: rows }, () => Array(cols).fill(0));
+  runComparison();
+}
+
+function generateMaze() {
+  clearWalls();
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if ((r === start.r && c === start.c) || (r === goal.r && c === goal.c)) continue;
+      if (Math.random() < 0.25) grid[r][c] = 1;
+    }
+  }
+  runComparison();
+}
+
+document.getElementById('algoSelect').addEventListener('change', runComparison);
+document.getElementById('diagCheck').addEventListener('change', runComparison);
+
+initDefaultWalls();
+runComparison();
+</script>
+</body>
+</html>

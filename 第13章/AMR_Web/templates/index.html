@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AMR 遙控介面</title>
+    <style>
+        body {
+            display: flex;
+            font-family: "Microsoft JhengHei", sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f9f9f9;
+        }
+        .left-panel {
+            flex: 1;
+            padding: 20px;
+            background-color: white;
+            box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
+            margin-right: 20px;
+        }
+        .right-panel {
+            flex: 1.5;
+            padding: 20px;
+            background-color: white;
+            box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        h2 { font-size: 22px; margin-top: 0; }
+        .status-text { font-size: 18px; margin-bottom: 10px; }
+        .algo-box {
+            background-color: #87CEEB;
+            padding: 10px;
+            margin-bottom: 5px;
+            font-weight: bold;
+            display: inline-block;
+        }
+        .path-text { font-size: 20px; margin: 20px 0 10px 0; }
+        .highlight { color: red; font-weight: bold; font-size: 24px; }
+        
+        .btn {
+            padding: 10px 30px;
+            font-size: 18px;
+            border: none;
+            cursor: pointer;
+            margin-right: 10px;
+            font-weight: bold;
+            border-radius: 5px;
+        }
+        .btn-start { background-color: #9ACD32; color: black; }
+        .btn-stop { background-color: #ffca28; color: black; }
+        .btn-reset { background-color: red; color: white; margin-bottom: 15px;}
+        
+        .map-container {
+            width: 100%;
+            text-align: center;
+            background-color: #e0e0e0; 
+            padding: 10px;
+            position: relative; /* 為了讓圖釘絕對定位 */
+            cursor: crosshair;
+        }
+        img {
+            max-width: 100%;
+            height: auto;
+            border: 1px dashed #999;
+        }
+        .waypoint-marker {
+            position: absolute;
+            color: red;
+            font-size: 24px;
+            font-weight: bold;
+            transform: translate(-50%, -100%); /* 校正圖釘尖端指向點擊處 */
+            pointer-events: none;
+        }
+    </style>
+    <!-- 引入 Socket.IO -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body>
+
+    <div class="left-panel">
+        <h2>歡迎來到AMR自主移動機器人遙控介面</h2>
+        <div class="status-text" id="conn-status">連線狀態: 連線中... ⏳</div>
+        <div class="status-text" id="loc-status">初始定位: 等待中 ⏳</div>
+        
+        <br>
+        <div class="status-text">請選擇路徑規劃演算法:</div>
+        <div class="algo-box">
+            <input type="radio" id="astar" name="algorithm" value="astar" checked>
+            <label for="astar">A星演算法 (A* Search Algorithm)</label>
+        </div>
+        <div style="margin: 5px 0 5px 40px;">or</div>
+        <div class="algo-box">
+            <input type="radio" id="dijkstra" name="algorithm" value="dijkstra">
+            <label for="dijkstra">戴克斯特拉演算法 (Dijkstra's Algorithm)</label>
+        </div>
+
+        <div class="path-text" id="path-display">目前路徑: (尚未設定)</div>
+        <div class="status-text" id="timer-display">總耗時: 00分00秒</div>
+        <br>
+        
+        <div>
+            <button class="btn btn-start" onclick="startNavigation()">開始</button>
+            <button class="btn btn-stop" onclick="stopNavigation()">停止</button>
+        </div>
+    </div>
+
+    <div class="right-panel">
+        <div class="status-text">當前所在位置: <span id="current-pose">📍 未知</span></div>
+        <div class="status-text">請依序於地圖上點擊欲前往地方</div>
+        <button class="btn btn-reset" onclick="resetWaypoints()">重新安排 ✖</button>
+        
+        <div class="map-container" id="map-area" onclick="onMapClick(event)">
+            <!-- 讀取 Flask static 資料夾中的圖片 -->
+            <img src="{{ url_for('static', filename='ocauseco.png') }}" id="map-img" alt="實驗室地圖">
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let waypoints = [];
+        let labels = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        
+        // 取得所選演算法
+        function getAlgorithm() {
+            return document.querySelector('input[name="algorithm"]:checked').value;
+        }
+
+        // 接收後端連線狀態
+        socket.on('connect', () => {
+            document.getElementById('conn-status').innerHTML = "已與ROS2建立聯繫 ✅";
+        });
+        socket.on('disconnect', () => {
+            document.getElementById('conn-status').innerHTML = "已與ROS2建立聯繫 ❌";
+        });
+
+        // 接收後端導航進度與計時器更新
+        socket.on('nav_status', (data) => {
+            if(data.timer) document.getElementById('timer-display').innerText = `總耗時: ${data.timer}`;
+            if(data.progress) document.getElementById('path-display').innerHTML = `導航進度: ${data.progress}`;
+        });
+
+        // 處理地圖點擊
+        function onMapClick(event) {
+            const mapArea = document.getElementById('map-area');
+            const mapImg = document.getElementById('map-img');
+            
+            // 計算點擊位置相對圖片的比例 (0.0 ~ 1.0)
+            const rect = mapImg.getBoundingClientRect();
+            const clickX = event.clientX - rect.left;
+            const clickY = event.clientY - rect.top;
+            
+            // 避免點到圖片外
+            if (clickX < 0 || clickY < 0 || clickX > rect.width || clickY > rect.height) return;
+
+            const ratioX = clickX / rect.width;
+            const ratioY = clickY / rect.height;
+
+            // 標記名稱 (A, B, C...)
+            const pointName = labels[waypoints.length % labels.length];
+            waypoints.push({ name: pointName, rx: ratioX, ry: ratioY });
+
+            // 在地圖上畫圖釘
+            const marker = document.createElement('div');
+            marker.className = 'waypoint-marker';
+            marker.innerHTML = `📍${pointName}`;
+            marker.style.left = `${clickX + mapImg.offsetLeft}px`;
+            marker.style.top = `${clickY + mapImg.offsetTop}px`;
+            mapArea.appendChild(marker);
+
+            // 更新左側文字
+            updatePathText();
+        }
+
+        function updatePathText() {
+            const pathText = waypoints.map(wp => wp.name).join(" >> ");
+            document.getElementById('path-display').innerHTML = `預定路徑: ${pathText || "(尚未設定)"}`;
+        }
+
+        function resetWaypoints() {
+            waypoints = [];
+            // 清除畫面上所有圖釘
+            document.querySelectorAll('.waypoint-marker').forEach(e => e.remove());
+            updatePathText();
+            document.getElementById('timer-display').innerText = "總耗時: 00分00秒";
+        }
+
+        // 發送導航任務
+        function startNavigation() {
+            if (waypoints.length === 0) {
+                alert("請先在地圖上點擊目標點！");
+                return;
+            }
+            const algo = getAlgorithm();
+            socket.emit('start_nav', { waypoints: waypoints, algorithm: algo });
+        }
+
+        // 發送停止指令
+        function stopNavigation() {
+            socket.emit('stop_nav');
+        }
+    </script>
+</body>
+</html>
